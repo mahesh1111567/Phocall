@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Desi Live Call</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <!-- GunDB for Realtime User List (No Server Needed) -->
+    <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            width: 90%;
+            max-width: 400px;
+            margin-top: 20px;
+        }
+        .card {
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            text-align: center;
+        }
+        input {
+            width: 80%;
+            padding: 12px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 5px;
+            background: #333;
+            color: white;
+            font-size: 16px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .btn-join { background-color: #2196F3; color: white; }
+        .btn-end { background-color: #f44336; color: white; display: none; }
+        
+        h3 { border-bottom: 1px solid #333; padding-bottom: 10px; }
+        
+        /* User List Styling */
+        .user-list {
+            list-style: none;
+            padding: 0;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .user-item {
+            background: #2c2c2c;
+            margin: 8px 0;
+            padding: 12px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .user-name { font-weight: bold; color: #4CAF50; }
+        .btn-call-mini {
+            background: #00C853;
+            color: white;
+            padding: 5px 15px;
+            width: auto;
+            margin: 0;
+            font-size: 14px;
+        }
+        #login-screen { display: block; }
+        #app-screen { display: none; }
+        .status { color: #aaa; font-size: 12px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        
+        <!-- SCREEN 1: Login -->
+        <div id="login-screen" class="card">
+            <h2>👋 Welcome</h2>
+            <p>Apna naam likhein taaki dost aapko pehchan sakein:</p>
+            <input type="text" id="username" placeholder="Apna Naam Daalein (e.g. Rahul)">
+            <button class="btn-join" onclick="joinApp()">Join App</button>
+        </div>
+
+        <!-- SCREEN 2: Main App -->
+        <div id="app-screen" class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 id="my-name-display">Me</h3>
+                <span class="status" id="connection-status">Connecting...</span>
+            </div>
+
+            <!-- Incoming Call Alert -->
+            <div id="incoming-call-alert" style="background:#ff9800; color:black; padding:10px; display:none; border-radius:5px; margin-bottom:10px;">
+                <p><b id="caller-name">Someone</b> call kar raha hai...</p>
+                <button onclick="acceptCall()">📞 Uthalo</button>
+            </div>
+
+            <!-- Active Call Controls -->
+            <div id="active-call-ui" style="display:none; background:#2e7d32; padding:15px; border-radius:10px; margin-bottom:15px;">
+                <p>Baat chal rahi hai... 🎙️</p>
+                <button class="btn-end" style="display:block;" onclick="endCall()">❌ Call Kato</button>
+            </div>
+
+            <!-- Online Users List -->
+            <p style="text-align: left; color: #888; margin-bottom: 5px;">Online Dosto ki List:</p>
+            <ul class="user-list" id="user-list">
+                <!-- Users yahan aayenge automatically -->
+                <li style="color: #555; font-style: italic; padding: 10px;">Scanning for friends...</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Hidden Audio -->
+    <audio id="remote-audio" autoplay></audio>
+
+    <script>
+        // === CONFIGURATION ===
+        const APP_NAME = 'desi_call_v1_simple'; // Unique Room Name
+        
+        // Global Variables
+        let myPeerId = null;
+        let myName = "";
+        let peer = null;
+        let currentCall = null;
+        let incomingCallRef = null;
+        
+        // Initialize GunDB (Free Decentralized Database)
+        const gun = Gun(['https://gun-manhattan.herokuapp.com/gun']);
+
+        // 1. JOIN APP FUNCTION
+        function joinApp() {
+            const nameInput = document.getElementById('username').value;
+            if(!nameInput) return alert("Naam likhna zaruri hai!");
+            
+            myName = nameInput;
+            
+            // Generate Random ID like Phone Number
+            myPeerId = Math.floor(100000 + Math.random() * 900000).toString();
+            
+            // UI Update
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('app-screen').style.display = 'block';
+            document.getElementById('my-name-display').innerText = myName + " (You)";
+
+            initPeer();
+        }
+
+        // 2. PEERJS SETUP (Calling System)
+        function initPeer() {
+            peer = new Peer(myPeerId);
+
+            peer.on('open', (id) => {
+                document.getElementById('connection-status').innerText = "Online ✅";
+                
+                // GunDB me khud ko register karo
+                const userRef = gun.get(APP_NAME).get('users');
+                userRef.get(id).put({ 
+                    name: myName, 
+                    id: id, 
+                    lastSeen: Date.now() 
+                });
+
+                // Har 5 second me heartbeat bhejo taaki online dikhein
+                setInterval(() => {
+                    userRef.get(id).put({ name: myName, id: id, lastSeen: Date.now() });
+                }, 5000);
+
+                startListeningForUsers();
+            });
+
+            // Incoming Call
+            peer.on('call', (call) => {
+                incomingCallRef = call;
+                // Call karne wale ka naam ID se nahi pata chalega directly is simple logic me, 
+                // isliye hum generic message dikhayenge ya metadata use karenge.
+                document.getElementById('caller-name').innerText = "Koi Dost"; 
+                document.getElementById('incoming-call-alert').style.display = 'block';
+            });
+        }
+
+        // 3. USER LIST LISTENER (Phonebook)
+        function startListeningForUsers() {
+            const listElement = document.getElementById('user-list');
+            const usersFound = {}; // Duplicate hatane ke liye
+
+            gun.get(APP_NAME).get('users').map().on((data, id) => {
+                if(!data || !data.id || data.id === myPeerId) return; // Khud ko list me mat dikhao
+
+                // Check if user is recently active (within last 20 seconds)
+                // Note: Real world me ye thoda complex hota hai, ye basic filter hai.
+                const now = Date.now();
+                if(now - data.lastSeen > 60000) {
+                    // Agar 1 min se purana hai to ignore karo (Old user)
+                    return; 
+                }
+
+                usersFound[id] = data;
+                renderUserList(usersFound);
+            });
+        }
+
+        function renderUserList(users) {
+            const listElement = document.getElementById('user-list');
+            listElement.innerHTML = '';
+
+            Object.values(users).forEach(user => {
+                const li = document.createElement('li');
+                li.className = 'user-item';
+                li.innerHTML = `
+                    <span class="user-name">👤 ${user.name}</span>
+                    <button class="btn-call-mini" onclick="makeCall('${user.id}')">📞 Call</button>
+                `;
+                listElement.appendChild(li);
+            });
+
+            if(Object.keys(users).length === 0) {
+                listElement.innerHTML = '<li style="padding:10px; color:#666;">Koi online nahi hai...</li>';
+            }
+        }
+
+        // 4. CALL HANDLING
+        function acceptCall() {
+            document.getElementById('incoming-call-alert').style.display = 'none';
+            
+            navigator.mediaDevices.getUserMedia({ video: false, audio: true }).then((stream) => {
+                incomingCallRef.answer(stream);
+                handleStream(incomingCallRef);
+            }).catch(err => alert("Mic Permission Denied"));
+        }
+
+        function makeCall(remoteId) {
+            if(currentCall) return alert("Already call par hain!");
+            
+            navigator.mediaDevices.getUserMedia({ video: false, audio: true }).then((stream) => {
+                const call = peer.call(remoteId, stream);
+                handleStream(call);
+            }).catch(err => alert("Mic Permission check karein"));
+        }
+
+        function handleStream(call) {
+            currentCall = call;
+            document.getElementById('active-call-ui').style.display = 'block';
+            document.getElementById('user-list').style.opacity = '0.5'; // List ko dhundhla kar do
+
+            call.on('stream', (remoteStream) => {
+                document.getElementById('remote-audio').srcObject = remoteStream;
+            });
+
+            call.on('close', endCallUI);
+            call.on('error', () => { alert("Connection Error"); endCallUI(); });
+        }
+
+        function endCall() {
+            if(currentCall) currentCall.close();
+            endCallUI();
+        }
+
+        function endCallUI() {
+            currentCall = null;
+            document.getElementById('active-call-ui').style.display = 'none';
+            document.getElementById('incoming-call-alert').style.display = 'none';
+            document.getElementById('user-list').style.opacity = '1';
+        }
+    </script>
+</body>
+</html>
